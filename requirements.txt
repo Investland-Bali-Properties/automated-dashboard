@@ -3,3 +3,7 @@ pandas>=2.0
 numpy>=1.24
 plotly>=5.15
 pyarrow>=14
+python-dotenv
+gspread
+google-auth
+google-auth-oauthlib
