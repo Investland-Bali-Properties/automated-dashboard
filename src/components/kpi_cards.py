@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from utils.formatting import format_currency
 
 
 def kpi_row(df: pd.DataFrame):
@@ -13,20 +14,8 @@ def kpi_row(df: pd.DataFrame):
     with col1:
         st.metric("Total Listings", f"{total_listings:,}")
     with col2:
-        st.metric("Median Price (IDR)", _fmt_currency(median_price_idr, suffix=" IDR"))
+        st.metric("Median Price (IDR)", format_currency(median_price_idr, suffix=" IDR"))
     with col3:
-        st.metric("Median Price (USD)", _fmt_currency(median_price_usd, prefix="$"))
+        st.metric("Median Price (USD)", format_currency(median_price_usd, prefix="$"))
     with col4:
-        st.metric("Median Price / sqm (IDR)", _fmt_currency(median_ppsqm_idr, suffix=" IDR"))
-
-
-def _fmt_currency(v, prefix="", suffix=""):
-    if v is None or pd.isna(v):
-        return "N/A"
-    if v > 1_000_000_000:
-        return f"{prefix}{v/1_000_000_000:.2f}B{suffix}"
-    if v > 1_000_000:
-        return f"{prefix}{v/1_000_000:.2f}M{suffix}"
-    if v > 1_000:
-        return f"{prefix}{v/1_000:.1f}K{suffix}"
-    return f"{prefix}{v:,.0f}{suffix}"
+        st.metric("Median Price / sqm (IDR)", format_currency(median_ppsqm_idr, suffix=" IDR"))

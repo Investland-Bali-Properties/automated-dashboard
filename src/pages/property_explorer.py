@@ -24,4 +24,4 @@ def page_property_explorer(df: pd.DataFrame):
         subset = subset.copy()
         subset["title"] = subset.apply(lambda r: f"[{r['title']}]({r['url']})" if r.get('title') and r.get('url') else r.get('title'), axis=1)
 
-    st.dataframe(subset[display_cols], use_container_width=True)
+    st.dataframe(subset[display_cols], width="stretch")
