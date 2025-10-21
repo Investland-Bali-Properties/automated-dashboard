@@ -105,6 +105,22 @@ def _materialize_creds_if_inline(path_or_json: str) -> str:
     return tmp_path
 
 
+def _available_secret_keys() -> list[str]:
+    keys: list[str] = []
+    try:
+        sec = getattr(st, "secrets", None)
+        if isinstance(sec, dict):
+            keys = list(sec.keys())
+        else:
+            try:
+                keys = list(sec.to_dict().keys())  # type: ignore[attr-defined]
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return sorted(set(str(k) for k in keys))
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def load_data() -> pd.DataFrame:
     """Load data from Google Sheets and return DataFrame with normalization + diagnostics."""
@@ -119,7 +135,13 @@ def load_data() -> pd.DataFrame:
     sheet_name = _get_secret("SHEET_NAME", "[Silver]Unified_Clean_Data")
 
     if not spreadsheet_id:
-        raise RuntimeError("SPREADSHEET_ID env var missing (env or secrets)")
+        # Add helpful diagnostics for Cloud
+        keys = _available_secret_keys()
+        env_flag = bool(os.getenv("SPREADSHEET_ID"))
+        raise RuntimeError(
+            "SPREADSHEET_ID env var missing (env or secrets). "
+            f"Env present? {env_flag}. Secrets keys: {keys}"
+        )
 
     service_account_raw = _get_secret("GOOGLE_APPLICATION_CREDENTIALS", "google-credentials.json")
     service_account_file = _materialize_creds_if_inline(service_account_raw)
