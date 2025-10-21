@@ -1,3 +1,4 @@
+import src.bootstrap_env  # must be first to set env/secrets
 import streamlit as st
 
 from src.config import TABS
