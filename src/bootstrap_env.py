@@ -104,7 +104,14 @@ def _load_dotenv_non_override() -> None:
     load_dotenv()
 
 
-# Execute on import
-_bridge_secrets_to_env()
-_materialize_google_credentials()
-_load_dotenv_non_override()
+
+def ensure_env() -> None:
+    """Idempotent: make sure env vars and creds are available.
+    Safe to call multiple times, both inside and outside Streamlit runtime.
+    """
+    _bridge_secrets_to_env()
+    _materialize_google_credentials()
+    _load_dotenv_non_override()
+
+# Execute on import for Streamlit main process, but also allow explicit calls elsewhere.
+ensure_env()

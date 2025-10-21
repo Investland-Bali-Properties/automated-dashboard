@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -6,10 +7,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 from typing import Set, List
 
+# Ensure .env loaded for local dev (non-override)
 load_dotenv()
-
-SHEET_NAME = os.getenv("SHEET_NAME", "[Silver]Unified_Clean_Data")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -77,19 +76,59 @@ def _multi_parse_datetime(series: pd.Series, patterns: List[str]):
 
     return parsed, reasons
 
+def _get_secret(name: str, default: str | None = None) -> str | None:
+    """Try env first, then st.secrets (if available)."""
+    val = os.getenv(name)
+    if val:
+        return val
+    try:
+        sec = getattr(st, "secrets", None)
+        if sec:
+            v = sec.get(name)  # type: ignore[index]
+            return str(v) if v is not None else default
+    except Exception:
+        pass
+    return default
+
+
+def _materialize_creds_if_inline(path_or_json: str) -> str:
+    """If GOOGLE_APPLICATION_CREDENTIALS is JSON content, write to /tmp and return the path."""
+    if os.path.exists(path_or_json):
+        return path_or_json
+    try:
+        json.loads(path_or_json)
+    except Exception:
+        return path_or_json
+    tmp_path = "/tmp/google-credentials.json"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(path_or_json)
+    return tmp_path
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def load_data() -> pd.DataFrame:
     """Load data from Google Sheets and return DataFrame with normalization + diagnostics."""
-    if not SPREADSHEET_ID:
-        raise RuntimeError("SPREADSHEET_ID env var missing")
+    # Late import to avoid circular if used elsewhere
+    try:
+        from src.bootstrap_env import ensure_env
+        ensure_env()
+    except Exception:
+        pass
 
-    service_account_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "google-credentials.json")
+    spreadsheet_id = _get_secret("SPREADSHEET_ID")
+    sheet_name = _get_secret("SHEET_NAME", "[Silver]Unified_Clean_Data")
+
+    if not spreadsheet_id:
+        raise RuntimeError("SPREADSHEET_ID env var missing (env or secrets)")
+
+    service_account_raw = _get_secret("GOOGLE_APPLICATION_CREDENTIALS", "google-credentials.json")
+    service_account_file = _materialize_creds_if_inline(service_account_raw)
     if not os.path.exists(service_account_file):
         raise FileNotFoundError(f"Service account file not found: {service_account_file}")
 
     credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    ws = client.open_by_key(spreadsheet_id).worksheet(sheet_name)
     # Pull raw values first for raw row count (includes header row at index 0)
     raw_values = ws.get_all_values()
     raw_row_count = max(len(raw_values) - 1, 0)  # minus header
