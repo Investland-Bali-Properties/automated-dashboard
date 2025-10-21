@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -91,18 +92,44 @@ def _get_secret(name: str, default: str | None = None) -> str | None:
     return default
 
 
+def _repair_json_private_key(text: str) -> str:
+    """If JSON text contains an unescaped multi-line private_key, escape newlines.
+    This fixes the common case when TOML triple-quoted strings preserve newlines.
+    """
+    pattern = r'"private_key"\s*:\s*"(.*?)"'
+    def _repl(m: re.Match[str]) -> str:
+        val = m.group(1)
+        val = val.replace("\r\n", "\\n").replace("\n", "\\n")
+        return f'"private_key": "{val}"'
+    return re.sub(pattern, _repl, text, flags=re.DOTALL)
+
+
 def _materialize_creds_if_inline(path_or_json: str) -> str:
-    """If GOOGLE_APPLICATION_CREDENTIALS is JSON content, write to /tmp and return the path."""
+    """If GOOGLE_APPLICATION_CREDENTIALS is JSON content, write to /tmp and return the path.
+    Accepts both valid JSON and TOML multi-line string variants; attempts auto-repair.
+    """
     if os.path.exists(path_or_json):
         return path_or_json
-    try:
-        json.loads(path_or_json)
-    except Exception:
-        return path_or_json
-    tmp_path = "/tmp/google-credentials.json"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(path_or_json)
-    return tmp_path
+    text = path_or_json.strip()
+    if text.startswith("{") and text.endswith("}"):
+        # Try parse; if fails, attempt to repair private_key newlines
+        content = text
+        try:
+            json.loads(content)
+        except Exception:
+            repaired = _repair_json_private_key(content)
+            try:
+                json.loads(repaired)
+                content = repaired
+            except Exception:
+                # As a last resort, still write content; downstream may still parse
+                pass
+        tmp_path = "/tmp/google-credentials.json"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return tmp_path
+    # Not JSON-like, treat as file path
+    return path_or_json
 
 
 def _available_secret_keys() -> list[str]:
