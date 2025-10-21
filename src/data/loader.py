@@ -9,7 +9,7 @@ from typing import Set, List
 load_dotenv()
 
 SHEET_NAME = os.getenv("SHEET_NAME", "[Silver]Unified_Clean_Data")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")  # put in .env
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -26,9 +26,24 @@ SCRAPED_AT_PATTERNS: List[str] = [
 
 
 def _normalize_sentinels(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace sentinel string tokens with None (in-place) and record counts in df.attrs.
+
+    Adds / updates:
+        df.attrs['sentinel_replacements'] = {column: count_replaced, ...}
+    """
+    replacements = {}
     for col in df.columns:
         if df[col].dtype == object:
-            df[col] = df[col].apply(lambda v: None if (isinstance(v, str) and v.strip() in SENTINELS) else v)
+            # Identify sentinel strings (strip then in SENTINELS)
+            mask = df[col].apply(lambda v: isinstance(v, str) and v.strip() in SENTINELS)
+            count = int(mask.sum())
+            if count:
+                replacements[col] = count
+                df.loc[mask, col] = None
+    if replacements:
+        existing = df.attrs.get('sentinel_replacements', {})
+        existing.update(replacements)
+        df.attrs['sentinel_replacements'] = existing
     return df
 
 
@@ -75,6 +90,10 @@ def load_data() -> pd.DataFrame:
     credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
     client = gspread.authorize(credentials)
     ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    # Pull raw values first for raw row count (includes header row at index 0)
+    raw_values = ws.get_all_values()
+    raw_row_count = max(len(raw_values) - 1, 0)  # minus header
+
     rows = ws.get_all_records()
     df = pd.DataFrame(rows)
     if df.empty:
@@ -100,5 +119,22 @@ def load_data() -> pd.DataFrame:
     for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Basic diagnostics
+    diagnostics = {
+        "raw_row_count": raw_row_count,
+        "dataframe_row_count": int(len(df)),
+        "unique_property_id": int(df["property_id"].nunique()) if "property_id" in df.columns else None,
+        "duplicate_property_id_rows": int(len(df) - df["property_id"].nunique()) if "property_id" in df.columns else None,
+        "sentinel_replacements": df.attrs.get("sentinel_replacements", {}),
+        "listing_date_non_null": int(df["listing_date"].notna().sum()) if "listing_date" in df.columns else None,
+        "scraped_at_non_null": int(df["scraped_at"].notna().sum()) if "scraped_at" in df.columns else None,
+    }
+    df.attrs['diagnostics'] = diagnostics
+    # Store into session state for pages to optionally display
+    try:
+        st.session_state['data_diagnostics'] = diagnostics
+    except Exception:
+        pass
 
     return df
