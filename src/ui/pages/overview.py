@@ -14,6 +14,7 @@ from src.ui.pages.helpers import (
     pct_change,
     resample_median,
     safe_median,
+    compute_sold_mask,
 )
 from src.ui.utils.currency import scalar_to_currency, series_to_currency
 
@@ -174,11 +175,8 @@ def render(df: pd.DataFrame, context: PageContext) -> None:
     median_ppsqm = _median_for_currency(df, "price_per_sqm_idr_calc", currency, None)
     median_days_listed = safe_median(df.get("days_listed", pd.Series(dtype=float)))
     supply = float(df["property_id"].nunique()) if "property_id" in df else float(len(df))
-    status_labels = df.get("listing_status_labels")
-    sales_volume = 0.0
-    if status_labels is not None:
-        status_series = status_labels.astype(str).str.lower()
-        sales_volume = float(status_series.str.contains("sold|under offer", regex=True).sum())
+    # Sales Volume based on availability (fallback to listing_status_labels)
+    sales_volume = float(compute_sold_mask(df).sum())
     median_ppsy = _median_for_currency(leasehold_df, "price_per_sqm_per_year", currency, None)
 
     cards: List[KpiCard] = [

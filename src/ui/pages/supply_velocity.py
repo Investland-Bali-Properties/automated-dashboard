@@ -9,7 +9,7 @@ from src.ui.components.charts import area_chart, bar_chart, render_plotly
 from src.ui.components.kpi import KpiCard, render_kpi_cards
 from src.ui.components.tables import render_table
 from src.ui.pages.context import PageContext
-from src.ui.pages.helpers import pct_change, resample_median, safe_median
+from src.ui.pages.helpers import pct_change, resample_median, safe_median, compute_sold_mask
 
 
 @st.cache_data(show_spinner=False)
@@ -37,11 +37,10 @@ def _new_listings_ts(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def _sales_volume_ts(df: pd.DataFrame, freq: str) -> pd.DataFrame:
-    status = df.get("listing_status_labels")
-    if status is None or "listing_date_effective" not in df:
+    if "listing_date_effective" not in df:
         return pd.DataFrame(columns=["period", "Sales Volume"])
     working = df.dropna(subset=["listing_date_effective"]).copy()
-    mask = working["listing_status_labels"].astype(str).str.contains("sold|under offer", regex=True, case=False)
+    mask = compute_sold_mask(working)
     sold = working[mask]
     if sold.empty:
         return pd.DataFrame(columns=["period", "Sales Volume"])
@@ -71,10 +70,7 @@ def _velocity_kpis(df: pd.DataFrame, freq: str) -> List[KpiCard]:
 
     days_median = safe_median(df.get("days_listed", pd.Series(dtype=float)))
 
-    status = df.get("listing_status_labels")
-    sales_volume = 0.0
-    if status is not None:
-        sales_volume = float(status.astype(str).str.contains("sold|under offer", regex=True, case=False).sum())
+    sales_volume = float(compute_sold_mask(df).sum())
 
     cards = [
         KpiCard("New Listings", value=latest_listings, decimals=0),
@@ -133,7 +129,7 @@ def _region_leaderboard(df: pd.DataFrame, freq: str) -> pd.DataFrame:
         .rename(columns={"listing_date_effective": "period"})
     )
     records = []
-    sold_mask = working.get("listing_status_labels", pd.Series(dtype=str)).astype(str).str.contains("sold|under offer", regex=True, case=False) if "listing_status_labels" in working else pd.Series(False, index=working.index)
+    sold_mask = compute_sold_mask(working)
     for area, area_df in counts.groupby("area"):
         area_df = area_df.sort_values("period")
         latest = area_df.iloc[-1]
@@ -141,11 +137,9 @@ def _region_leaderboard(df: pd.DataFrame, freq: str) -> pd.DataFrame:
         growth = pct_change(latest["Listings"], previous["Listings"] if previous is not None else None)
         subset = working[working["area"] == area]
         median_days = safe_median(subset.get("days_listed", pd.Series(dtype=float)))
-        conversion = None
-        if "listing_status_labels" in working:
-            sold_count = subset[sold_mask.loc[subset.index]].shape[0]
-            total = subset.shape[0]
-            conversion = (sold_count / total * 100) if total else None
+        sold_count = subset[sold_mask.loc[subset.index]].shape[0]
+        total = subset.shape[0]
+        conversion = (sold_count / total * 100) if total else None
         records.append(
             {
                 "Area": area,

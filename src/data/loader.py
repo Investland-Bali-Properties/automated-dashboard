@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
-from typing import Set, List
+from typing import Set, List, Tuple
 
 # Ensure .env loaded for local dev (non-override)
 load_dotenv()
@@ -92,6 +92,66 @@ def _get_secret(name: str, default: str | None = None) -> str | None:
     return default
 
 
+def _get_list_secret(name: str, fallback_name: str | None = None, default: List[str] | None = None) -> List[str] | None:
+    """Get list-like secret from env or st.secrets.
+    Accepts TOML array, JSON array string, or comma-separated string.
+    If not found, will check fallback_name, then return default.
+    """
+    def parse_list(raw) -> List[str] | None:
+        if raw is None:
+            return None
+        # Already list (from TOML secrets)
+        if isinstance(raw, list):
+            return [str(x).strip() for x in raw if str(x).strip()]
+        s = str(raw).strip()
+        if not s:
+            return None
+        # JSON array
+        if (s.startswith("[") and s.endswith("]")) or (s.startswith("\n[") and s.strip().endswith("]")):
+            try:
+                arr = json.loads(s)
+                return [str(x).strip() for x in arr if str(x).strip()]
+            except Exception:
+                pass
+        # comma-separated
+        if "," in s:
+            return [item.strip() for item in s.split(",") if item.strip()]
+        # single value
+        return [s]
+
+    # Env first
+    env_val = os.getenv(name)
+    lst = parse_list(env_val)
+    if lst:
+        return lst
+    # st.secrets
+    try:
+        sec = getattr(st, "secrets", None)
+        if sec:
+            raw = sec.get(name)  # type: ignore[index]
+            lst = parse_list(raw)
+            if lst:
+                return lst
+    except Exception:
+        pass
+    # Fallback var
+    if fallback_name:
+        env_val = os.getenv(fallback_name)
+        lst = parse_list(env_val)
+        if lst:
+            return lst
+        try:
+            sec = getattr(st, "secrets", None)
+            if sec:
+                raw = sec.get(fallback_name)  # type: ignore[index]
+                lst = parse_list(raw)
+                if lst:
+                    return lst
+        except Exception:
+            pass
+    return default
+
+
 def _repair_json_private_key(text: str) -> str:
     """If JSON text contains an unescaped multi-line private_key, escape newlines.
     This fixes the common case when TOML triple-quoted strings preserve newlines.
@@ -148,9 +208,8 @@ def _available_secret_keys() -> list[str]:
     return sorted(set(str(k) for k in keys))
 
 
-@st.cache_data(show_spinner=False, ttl=600)
 def load_data() -> pd.DataFrame:
-    """Load data from Google Sheets and return DataFrame with normalization + diagnostics."""
+    """Wrapper that resolves config and calls the cached implementation."""
     # Late import to avoid circular if used elsewhere
     try:
         from src.bootstrap_env import ensure_env
@@ -159,7 +218,8 @@ def load_data() -> pd.DataFrame:
         pass
 
     spreadsheet_id = _get_secret("SPREADSHEET_ID")
-    sheet_name = _get_secret("SHEET_NAME", "[Silver]Unified_Clean_Data")
+    # Prefer explicit list in SHEET_NAMES; else fall back to SHEET_NAME (supports comma-separated)
+    sheet_names = _get_list_secret("SHEET_NAMES", fallback_name="SHEET_NAME", default=["[Silver]Unified_Clean_Data"]) or ["[Silver]Unified_Clean_Data"]
 
     if not spreadsheet_id:
         # Add helpful diagnostics for Cloud
@@ -175,15 +235,37 @@ def load_data() -> pd.DataFrame:
     if not os.path.exists(service_account_file):
         raise FileNotFoundError(f"Service account file not found: {service_account_file}")
 
+    # Call cached impl with explicit params for proper cache keying
+    return _load_data_impl(spreadsheet_id, tuple(sheet_names), service_account_file)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _load_data_impl(spreadsheet_id: str, sheet_names: Tuple[str, ...], service_account_file: str) -> pd.DataFrame:
+    """Load data from one or more sheet tabs and return normalized DataFrame.
+    Cached by spreadsheet_id, sheet_names, and service_account_file.
+    """
     credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    ws = client.open_by_key(spreadsheet_id).worksheet(sheet_name)
-    # Pull raw values first for raw row count (includes header row at index 0)
-    raw_values = ws.get_all_values()
-    raw_row_count = max(len(raw_values) - 1, 0)  # minus header
+    ss = client.open_by_key(spreadsheet_id)
 
-    rows = ws.get_all_records()
-    df = pd.DataFrame(rows)
+    frames: List[pd.DataFrame] = []
+    total_raw_rows = 0
+    for name in sheet_names:
+        ws = ss.worksheet(name)
+        raw_values = ws.get_all_values()
+        total_raw_rows += max(len(raw_values) - 1, 0)
+        rows = ws.get_all_records()
+        df_i = pd.DataFrame(rows)
+        if df_i.empty:
+            continue
+        df_i["data_source"] = name
+        frames.append(df_i)
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True, sort=True)
+
     if df.empty:
         return df
 
@@ -210,13 +292,14 @@ def load_data() -> pd.DataFrame:
 
     # Basic diagnostics
     diagnostics = {
-        "raw_row_count": raw_row_count,
+        "raw_row_count": total_raw_rows,
         "dataframe_row_count": int(len(df)),
         "unique_property_id": int(df["property_id"].nunique()) if "property_id" in df.columns else None,
         "duplicate_property_id_rows": int(len(df) - df["property_id"].nunique()) if "property_id" in df.columns else None,
         "sentinel_replacements": df.attrs.get("sentinel_replacements", {}),
         "listing_date_non_null": int(df["listing_date"].notna().sum()) if "listing_date" in df.columns else None,
         "scraped_at_non_null": int(df["scraped_at"].notna().sum()) if "scraped_at" in df.columns else None,
+        "sheet_names": list(sheet_names),
     }
     df.attrs['diagnostics'] = diagnostics
     # Store into session state for pages to optionally display
