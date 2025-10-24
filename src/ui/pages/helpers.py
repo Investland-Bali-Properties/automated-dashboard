@@ -95,3 +95,22 @@ def pct_change(current: Optional[float], previous: Optional[float]) -> Optional[
         return ((current - previous) / previous) * 100
     except ZeroDivisionError:
         return None
+
+
+def compute_sold_mask(df: pd.DataFrame) -> pd.Series:
+    """Return boolean mask marking rows considered 'sold/under offer'.
+    Priority rules:
+    - If column 'availability' exists: treat values containing 'sold' or 'under offer' (case-insensitive) as sold.
+      Common examples: 'Available', 'Sold', 'Under Offer', 'Unavailable'.
+    - Else, fallback to 'listing_status_labels' substring check ('sold'|'under offer').
+    If neither column exists, returns all False.
+    """
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    if "availability" in df.columns:
+        s = df["availability"].astype(str).str.lower()
+        return s.str.contains("sold|under offer", regex=True, na=False)
+    if "listing_status_labels" in df.columns:
+        s = df["listing_status_labels"].astype(str).str.lower()
+        return s.str.contains("sold|under offer", regex=True, na=False)
+    return pd.Series(False, index=df.index)

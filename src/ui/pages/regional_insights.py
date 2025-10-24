@@ -6,7 +6,7 @@ import streamlit as st
 from src.ui.components.charts import bar_chart, line_chart, render_plotly, scatter_plot
 from src.ui.components.tables import render_table
 from src.ui.pages.context import PageContext
-from src.ui.pages.helpers import pct_change
+from src.ui.pages.helpers import pct_change, compute_sold_mask
 from src.ui.utils.currency import series_to_currency
 
 
@@ -61,10 +61,9 @@ def _supply_growth(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
 
 def _sales_volume(df: pd.DataFrame) -> pd.DataFrame:
-    status = df.get("listing_status_labels")
-    if status is None or "area" not in df:
+    if "area" not in df:
         return pd.DataFrame(columns=["Area", "Sales Volume"])
-    mask = status.astype(str).str.contains("sold|under offer", regex=True, case=False)
+    mask = compute_sold_mask(df)
     sold = df[mask]
     if sold.empty:
         return pd.DataFrame(columns=["Area", "Sales Volume"])
